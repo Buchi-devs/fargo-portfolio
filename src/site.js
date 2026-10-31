@@ -21,6 +21,55 @@ const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a)
 const safeUrl = u => (/^https?:\/\//i.test(u || '') ? u : null);
 const hostOf = p => p.host || (p.url || '').replace(/^https?:\/\//i, '').replace(/\/$/, '');
 const clean = a => (a || []).map(s => String(s).trim()).filter(Boolean);
+const imgUrl = u => (/^(https?:\/\/|\/api\/media\?id=)/i.test(u || '') ? u : null);
+
+/* ---------- sound: synthesized, off until the visitor turns it on ---------- */
+const Sound = (() => {
+  let ctx = null, on = false, pad = null;
+  try { on = localStorage.getItem('fargo:sound') === '1'; } catch (e) {}
+  const ensure = () => { if (!ctx) { const A = window.AudioContext || window.webkitAudioContext; if (A) ctx = new A(); } if (ctx && ctx.state === 'suspended') ctx.resume(); return ctx; };
+  const notes = [523.25, 587.33, 659.25, 783.99, 880, 1046.5];
+  function blip(f = notes[Math.floor(Math.random() * notes.length)], vol = 0.03, dur = 0.2) {
+    if (!on || !ensure()) return; const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(f, t); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function whoosh() {
+    if (!on || !ensure()) return; const t = ctx.currentTime, len = 0.9, buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * len), ctx.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    s.buffer = buf; f.type = 'bandpass'; f.Q.value = 0.8; f.frequency.setValueAtTime(300, t); f.frequency.exponentialRampToValueAtTime(2400, t + len * 0.6);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.045, t + 0.25); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    s.connect(f).connect(g).connect(ctx.destination); s.start(t);
+  }
+  function padOn() {
+    if (pad || !ensure()) return; const t = ctx.currentTime, g = ctx.createGain(), lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 700; g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.022, t + 2.5);
+    const os = [110, 164.81, 220.5].map(fq => { const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = fq; o.connect(lp); o.start(); return o; });
+    lp.connect(g).connect(ctx.destination); pad = { g, os };
+  }
+  function padOff() { if (!pad) return; const t = ctx.currentTime, p = pad; p.g.gain.cancelScheduledValues(t); p.g.gain.setValueAtTime(p.g.gain.value, t); p.g.gain.linearRampToValueAtTime(0, t + 0.6); setTimeout(() => p.os.forEach(o => o.stop()), 700); pad = null; }
+  return {
+    get on() { return on; },
+    toggle() { on = !on; try { localStorage.setItem('fargo:sound', on ? '1' : '0'); } catch (e) {} if (on) { ensure(); blip(783.99, 0.05, 0.35); padOn(); } else padOff(); return on; },
+    blip, whoosh,
+  };
+})();
+
+function useTilt(ref, max = 7) {
+  useEffect(() => {
+    const el = ref.current; if (!el || touch || reduce) return;
+    const mv = e => { const r = el.getBoundingClientRect(), x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5; gsap.to(el, { rotateY: x * max * 2, rotateX: -y * max * 2, transformPerspective: 1100, duration: 0.6, ease: 'power3.out' }); el.style.setProperty('--gx', (x + 0.5) * 100 + '%'); el.style.setProperty('--gy', (y + 0.5) * 100 + '%'); };
+    const lv = () => gsap.to(el, { rotateY: 0, rotateX: 0, duration: 1.1, ease: 'elastic.out(1,0.5)' });
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerleave', lv);
+    return () => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerleave', lv); };
+  }, []);
+}
+
+function SoundBtn() {
+  const [on, setOn] = useState(Sound.on);
+  return html`<button className=${'snd' + (on ? ' on' : '')} onClick=${() => setOn(Sound.toggle())} aria-pressed=${on} aria-label="Sound" data-cursor=${on ? 'Mute' : 'Sound'}><i></i><i></i><i></i><i></i></button>`;
+}
 
 function go(id) {
   const L = window.__lenis; const el = id === 'intro' ? 0 : document.getElementById(id);
@@ -32,18 +81,17 @@ function go(id) {
 
 /* ---------- WebGL stage ---------- */
 const Stage = (() => {
-  const noop = { setShape() {}, setHero() {}, setEnd() {}, intro() {}, pulse() {}, capsulePx: () => innerHeight * 0.4 };
-  if (!window.THREE) return noop;
+  const noop = { setShape() {}, setHero() {}, setEnd() {}, intro() {}, pulse() {}, setGlow() {}, capsulePx: () => innerHeight * 0.4 };
   const canvas = document.getElementById('gl');
   let renderer;
   try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); } catch (e) { return noop; }
   const PR = Math.min(devicePixelRatio || 1, 2);
   renderer.setPixelRatio(PR);
   renderer.setSize(innerWidth, innerHeight, false);
-  renderer.setClearColor(0x000000, 1);
+  renderer.setClearColor(0x040507, 1);
   renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.2;
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 100);
   camera.position.set(0, 0, 7);
@@ -135,6 +183,13 @@ const Stage = (() => {
     else if (u < 0.94) { const e = links[Math.floor(rnd() * links.length)], a = nodes[e[0]], b = nodes[e[1]], t = rnd(); let x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t, z = a[2] + (b[2] - a[2]) * t; const l = Math.hypot(x, y, z) || 1, k = RR * (1 + 0.08 * Math.sin(Math.PI * t)) / l; p[0] = x * k + gauss() * 0.006; p[1] = y * k + gauss() * 0.006; p[2] = z * k + gauss() * 0.006; }
     else shellPt(p, 0, 0, 0, 0.5 * Math.cbrt(rnd()));
   });
+  SH.halo = build(p => {
+    const u = rnd(), th = rnd() * TAU;
+    if (u < 0.62) { const r = 1.45 + gauss() * 0.035; p[0] = Math.cos(th) * r; p[1] = Math.sin(th) * r; p[2] = gauss() * 0.04; }
+    else if (u < 0.82) { const r = 1.62 + gauss() * 0.012; p[0] = Math.cos(th) * r; p[1] = Math.sin(th) * r; p[2] = 0; }
+    else { const r = 1.75 + Math.pow(rnd(), 2) * 1.6; p[0] = Math.cos(th) * r; p[1] = Math.sin(th) * r; p[2] = gauss() * 0.3; }
+  });
+  SH.galaxy = build(p => { const arm = Math.floor(rnd() * 3), r = Math.pow(rnd(), 0.7) * 3.1, a = r * 1.7 + arm * TAU / 3 + gauss() * 0.22 / (r + 0.35); p[0] = Math.cos(a) * r; p[2] = Math.sin(a) * r; p[1] = gauss() * 0.07 * (1.2 - r / 3.1); });
   const waveBase = new Float32Array(M * 2), cols = Math.ceil(Math.sqrt(M * 1.8)), rows = Math.ceil(M / cols);
   for (let i = 0; i < M; i++) { waveBase[i * 2] = (i % cols) / cols * 11 - 5.5; waveBase[i * 2 + 1] = Math.floor(i / cols) / rows * 6 - 4; }
 
@@ -175,12 +230,45 @@ const Stage = (() => {
   const points = new THREE.Points(geo, mat); points.frustumCulled = false;
   const rig = new THREE.Group(); rig.add(capsule, points); scene.add(rig);
 
+  // ambient aurora: slow drifting light behind everything, tinted by the current scene
+  const bgUni = { uTime: uni.uTime, uTint: uni.uTint, uCool: uni.uCool, uAlpha: uni.uAlpha, uMouse: { value: new THREE.Vector2() }, uAspect: { value: innerWidth / innerHeight }, uGlow: { value: 1 } };
+  const bg = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+    uniforms: bgUni, depthTest: false, depthWrite: false,
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }',
+    fragmentShader: `
+      uniform float uTime; uniform vec3 uTint; uniform vec3 uCool; uniform float uAlpha; uniform vec2 uMouse; uniform float uAspect; uniform float uGlow;
+      varying vec2 vUv;
+      float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float n2(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3. - 2. * f); return mix(mix(h(i), h(i + vec2(1., 0.)), u.x), mix(h(i + vec2(0., 1.)), h(i + vec2(1., 1.)), u.x), u.y); }
+      float fbm(vec2 p){ float v = 0., a = .5; for (int i = 0; i < 5; i++) { v += a * n2(p); p = p * 2.03 + 17.1; a *= .5; } return v; }
+      void main(){
+        vec2 p = (vUv - .5) * vec2(uAspect, 1.);
+        float t = uTime * .06;
+        float warp = fbm(p * 1.6 + vec2(t, -t * .8));
+        float n = fbm(p * 1.2 + warp * 1.3 + vec2(-t * .5, t * .3));
+        vec2 o1 = vec2(sin(t * 2.7) * .55 * uAspect, cos(t * 2.1) * .3 + .1);
+        vec2 o2 = vec2(cos(t * 1.9 + 1.7) * .6 * uAspect, sin(t * 1.5 + .6) * .35 - .1);
+        vec2 m = uMouse * vec2(uAspect, 1.) * .5;
+        float g1 = exp(-dot(p - o1, p - o1) * 2.2);
+        float g2 = exp(-dot(p - o2, p - o2) * 2.6);
+        float gm = exp(-dot(p - m, p - m) * 5.);
+        float beam = pow(max(0., 1. - abs(dot(p, normalize(vec2(1., .6))) - sin(t * 3.) * .6) * 1.8), 4.);
+        vec3 col = uTint * g1 * (.35 + n * .9) + uCool * g2 * (.25 + n * .7) + uTint * gm * .18 + mix(uTint, vec3(1.), .5) * beam * (.05 + n * .12);
+        col += uTint * n * n * .05;
+        col *= .6 * uAlpha * uGlow;
+        col += (h(gl_FragCoord.xy) - .5) / 255.;
+        gl_FragColor = vec4(col, 1.);
+      }`
+  }));
+  bg.frustumCulled = false; bg.renderOrder = -10; scene.add(bg);
+
   const CAPBASE = 0.72;
   const ST = {
     capsule: { size: 0.42, spin: 0, tilt: 0, jit: 0.35 }, burst: { size: 0.75, spin: 0.06, tilt: 0.1, jit: 1 },
     coin: { size: 1, spin: 0.32, tilt: 0.12, jit: 1 }, arena: { size: 0.95, spin: 0.14, tilt: 0.34, jit: 0.8 },
     twin: { size: 1, spin: 0.24, tilt: 0.3, jit: 1 }, vault: { size: 0.9, spin: 0.18, tilt: 0.45, jit: 0.7 },
     agents: { size: 0.95, spin: 0.14, tilt: 0.22, jit: 1 }, wave: { size: 0.85, spin: 0, tilt: 0, jit: 0.4 },
+    halo: { size: 0.8, spin: 0, tilt: 0, jit: 1, x: -1.5 }, galaxy: { size: 0.9, spin: 0.12, tilt: 1.05, jit: 1 },
   };
   let shape = 'capsule';
   const tint = new THREE.Color(AURA), tintTo = new THREE.Color(AURA);
@@ -198,7 +286,7 @@ const Stage = (() => {
 
   let mx = 0, my = 0, smx = 0, smy = 0;
   addEventListener('pointermove', e => { mx = e.clientX / innerWidth * 2 - 1; my = e.clientY / innerHeight * 2 - 1; }, { passive: true });
-  addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight, false); });
+  addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight, false); bgUni.uAspect.value = innerWidth / innerHeight; });
 
   const clock = new THREE.Clock(), qT = new THREE.Quaternion(), eT = new THREE.Euler();
   let t = 0, spin = 0, capSpin = 0;
@@ -238,6 +326,8 @@ const Stage = (() => {
     points.quaternion.slerp(qT, 1 - Math.pow(0.93, f));
     const ps = shape === 'capsule' ? cs : 1; points.scale.setScalar(points.scale.x + (ps - points.scale.x) * e);
     const rs = rigS(); rig.scale.setScalar(rig.scale.x + (rs - rig.scale.x) * e);
+    const tx = isMobile() ? 0 : st.x || 0; rig.position.x += (tx - rig.position.x) * e;
+    bgUni.uMouse.value.set(smx, -smy);
     camera.position.x = smx * 0.15; camera.position.y = -smy * 0.1; camera.lookAt(0, 0, 0);
     renderer.render(scene, camera);
     requestAnimationFrame(frame);
@@ -250,6 +340,7 @@ const Stage = (() => {
     setHero(p) { cap.heroOpen = sstep(0.06, 0.5, p); cap.heroAlpha = 1 - sstep(0.36, 0.6, p); },
     setEnd(p) { cap.endOpen = 1 - sstep(0.35, 1, p); cap.endAlpha = sstep(0.1, 0.7, p); },
     intro() { gsap.to(cap, { intro: 1, duration: reduce ? 0.01 : 1.8, ease: 'expo.out' }); gsap.to(uni.uAlpha, { value: 1, duration: reduce ? 0.01 : 2.4, ease: 'power2.out' }); },
+    setGlow(v) { bgUni.uGlow.value = Number(v) || 0; },
     pulse() { if (reduce) return; for (let i = 0; i < M * 3; i++) vel[i] += (rnd() - 0.5) * 0.16; },
     capsulePx() { const visH = 2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)); return 2 * (H + R) * CAPBASE * rigS() / visH * innerHeight; },
   };
@@ -324,9 +415,11 @@ function Nav({ C, logoRef, revealed, booted }) {
   return html`<header className=${'nav' + (revealed ? ' on' : '')}>
     <button className=${'logo' + (booted ? ' on' : '')} ref=${logoRef} onClick=${() => go('intro')} aria-label=${C.brand.wordmark + ', back to top'}>${C.brand.wordmark}</button>
     <nav className="nav-links" aria-label="Main">
+      <button className="opt" onClick=${() => go('about')}>${L.navAbout}</button>
       <button className="opt" onClick=${() => go(first)}>${L.navWork}</button>
       <button className="opt" onClick=${() => go('stack')}>${L.navStack}</button>
       <button onClick=${() => go('contact')}>${L.navContact}</button>
+      <${SoundBtn} />
     </nav>
   </header>`;
 }
@@ -376,12 +469,72 @@ function Scene({ C, p, active, onOpen }) {
       ${p.kind ? html`<p className="scene-kind">${p.kind}</p>` : null}
       ${url ? html`<a className="scene-host" href=${url} target="_blank" rel="noopener" data-cursor="Visit">${hostOf(p)}</a>` : null}
     </div>
+    <${Shot} p=${p} C=${C} onOpen=${onOpen} />
     <div className="scene-foot">
       <div className="specs">${(p.specs || []).filter(s => s.value || s.label).map((s, i) => html`<div className="spec" key=${i}><b>${s.value}</b><span>${s.label}</span></div>`)}</div>
       <div className="ctas">
         ${url ? html`<a className="btn btn-pri mag" href=${url} target="_blank" rel="noopener" data-cursor="Visit">${C.labels.visit}</a>` : null}
         <button className=${'btn mag ' + (url ? 'btn-sec' : 'btn-pri')} onClick=${() => onOpen(p)} data-cursor="Open">${C.labels.notes}</button>
       </div>
+    </div>
+  </section>`;
+}
+
+function Shot({ p, C, onOpen }) {
+  const img = imgUrl(p.image), card = useRef();
+  useTilt(card, 6);
+  return html`<div className="pcard-wrap">
+    <button className="pcard" ref=${card} onClick=${() => onOpen(p)} data-cursor="Open" aria-label=${C.labels.notes + ': ' + p.name} style=${{ '--t': p.tint || C.theme.aura }}>
+      <span className="pcard-bar"><i></i><i></i><i></i><em>${hostOf(p) || p.name}</em></span>
+      <span className="pcard-view">${img ? html`<img src=${img} alt="" loading="lazy" />` : html`<span className="pcard-ph"><b>${p.name}</b><span className="ph-ui"><i></i><i></i><i></i><i></i></span></span>`}</span>
+      <span className="pcard-glare"></span>
+    </button>
+  </div>`;
+}
+
+function About({ C }) {
+  const A = C.about, photo = imgUrl(A.photo), card = useRef();
+  useTilt(card, 8);
+  return html`<section className="about" id="about" aria-label=${C.labels.aboutChapter}>
+    <div className="about-in">
+      <div className="portrait-wrap">
+        <div className="portrait" ref=${card} data-cursor="Hi">
+          ${photo ? html`<img src=${photo} alt=${A.name} />` : html`<div className="portrait-empty"><span>${(A.name || 'B').charAt(0)}</span></div>`}
+          <i className="sheen"></i>
+        </div>
+        <div className="portrait-cap"><b>${A.name}</b><span>${A.role}</span></div>
+      </div>
+      <div className="about-copy">
+        <h2 className="about-title"><${Split} text=${A.title} /></h2>
+        ${String(A.body || '').split('\n').filter(s => s.trim()).map((t, i) => html`<p key=${i}>${t}</p>`)}
+        <div className="facts">${(A.facts || []).filter(f => f.value || f.label).map((f, i) => html`<div className="spec" key=${i}><b>${f.value}</b><span>${f.label}</span></div>`)}</div>
+      </div>
+    </div>
+  </section>`;
+}
+
+function Marquee({ C }) {
+  const words = (C.marquee || []).filter(Boolean);
+  if (!words.length) return null;
+  const rows = [words, [...words].reverse()];
+  return html`<section className="marquee" aria-hidden="true">${rows.map((r, ri) => html`<div className=${'mq-row' + (ri ? ' alt' : '')} key=${ri}><div className="mq-track">${[0, 1].map(k => html`<span className="mq-set" key=${k}>${r.map((w, i) => html`<span className="mq-w" key=${i}>${w}<i className="mq-dot"></i></span>`)}</span>`)}</div></div>`)}</section>`;
+}
+
+function More({ C, onOpen }) {
+  const M = C.more;
+  return html`<section className="more" id="more" aria-label=${C.labels.moreChapter}>
+    <div className="more-stage">
+      <div className="more-head"><h2>${M.title}</h2>${M.sub ? html`<p>${M.sub}</p>` : null}</div>
+      <div className="more-track">${C.work.map((w, i) => {
+        const proj = C.projects.find(p => p.id === w.id);
+        const img = imgUrl(w.image) || (proj && imgUrl(proj.image));
+        const url = safeUrl(w.url) || (proj && safeUrl(proj.url));
+        const st = { '--t': (proj && proj.tint) || C.theme.aura };
+        const inner = html`<span className="mcard-img">${img ? html`<img src=${img} alt="" loading="lazy" />` : html`<b>${w.name}</b>`}</span><span className="mcard-body"><span className="mrow"><b>${w.name}</b><span className="mtag">${w.note}</span></span><span className="mtxt">${w.summary}</span></span>`;
+        if (proj) return html`<button key=${i} className="mcard" style=${st} onClick=${() => onOpen(proj)} data-cursor="Open">${inner}</button>`;
+        if (url) return html`<a key=${i} className="mcard" style=${st} href=${url} target="_blank" rel="noopener" data-cursor="Visit">${inner}</a>`;
+        return html`<div key=${i} className="mcard" style=${st}>${inner}</div>`;
+      })}</div>
     </div>
   </section>`;
 }
@@ -443,12 +596,15 @@ function Drawer({ C, p, onClose }) {
     <aside className=${'drawer' + (open ? ' open' : '')} role="dialog" aria-modal="true" aria-hidden=${!open} aria-label=${d ? d.name + ' ' + C.labels.notes : C.labels.notes} data-lenis-prevent="" style=${{ '--t': d ? d.tint : C.theme.aura }}>
       <button className="x" ref=${xRef} onClick=${onClose} data-cursor="Close" tabIndex=${open ? 0 : -1}>${C.labels.close}</button>
       ${d ? html`<div className="reveal" key=${d.id}>
+        ${imgUrl(d.image) ? html`<img className="d-hero" src=${imgUrl(d.image)} alt="" />` : null}
         <h3>${d.name}</h3>
         <p className="lede">${d.problem}</p>
         ${clean(d.built).length ? html`<h4>${C.labels.built}</h4>` : null}
         ${clean(d.built).length ? html`<ul className="d-list">${clean(d.built).map((b, i) => html`<li key=${i}>${b}</li>`)}</ul>` : null}
         ${clean(d.stack).length ? html`<h4>${C.labels.stack}</h4>` : null}
         ${clean(d.stack).length ? html`<div className="d-tags">${clean(d.stack).map((s, i) => html`<span key=${i}>${s}</span>`)}</div>` : null}
+        ${(d.gallery || []).map(imgUrl).filter(Boolean).length ? html`<h4>${C.labels.gallery}</h4>` : null}
+        ${(d.gallery || []).map(imgUrl).filter(Boolean).length ? html`<div className="d-gal">${(d.gallery || []).map(imgUrl).filter(Boolean).map((g, i) => html`<img key=${i} src=${g} alt="" loading="lazy" />`)}</div>` : null}
         ${url ? html`<a className="btn btn-pri" href=${url} target="_blank" rel="noopener" tabIndex=${open ? 0 : -1}>Visit ${hostOf(d)}</a>` : null}
       </div>` : null}
     </aside>`;
@@ -476,7 +632,7 @@ function Cursor() {
     let x = innerWidth / 2, y = innerHeight / 2, rx = x, ry = y, raf;
     const mv = e => { x = e.clientX; y = e.clientY; const t = e.target.closest && e.target.closest('a,button,[data-cursor]'); ring.current.classList.toggle('hov', !!t); lab.current.textContent = (t && t.dataset.cursor) || ''; };
     addEventListener('pointermove', mv, { passive: true });
-    const loop = () => { rx += (x - rx) * 0.18; ry += (y - ry) * 0.18; ring.current.style.transform = `translate3d(${rx}px,${ry}px,0)`; dot.current.style.transform = `translate3d(${x}px,${y}px,0)`; raf = requestAnimationFrame(loop); };
+    const loop = () => { rx += (x - rx) * 0.18; ry += (y - ry) * 0.18; ring.current.style.transform = `translate3d(${rx}px,${ry}px,0)`; dot.current.style.transform = `translate3d(${x}px,${y}px,0)`; document.documentElement.style.setProperty('--mx', rx + 'px'); document.documentElement.style.setProperty('--my', ry + 'px'); raf = requestAnimationFrame(loop); };
     loop();
     return () => { removeEventListener('pointermove', mv); cancelAnimationFrame(raf); };
   }, []);
@@ -491,7 +647,9 @@ function App({ C }) {
   const [drawer, setDrawer] = useState(null);
   const logoRef = useRef();
   const L = C.labels, aura = C.theme.aura;
-  const chapters = [['intro', L.introChapter], ...C.projects.map(p => [p.id, p.name]), ['stack', L.stackChapter], ['contact', L.contactChapter]];
+  const chapters = [['intro', L.introChapter], ['about', L.aboutChapter], ...C.projects.map(p => [p.id, p.name]), ['more', L.moreChapter], ['stack', L.stackChapter], ['contact', L.contactChapter]];
+  const lastRef = useRef('intro');
+  const activate = id => { if (lastRef.current !== id) { lastRef.current = id; Sound.whoosh(); } setActive(id); };
 
   useEffect(() => {
     const root = document.documentElement;
@@ -506,6 +664,10 @@ function App({ C }) {
     }
     window.__lenis = lenis;
     if (preview) { window.__booted = true; Stage.intro(); }
+    Stage.setGlow(C.theme.glow ?? 1);
+    const more = document.getElementById('more'), track = more && more.querySelector('.more-track');
+    const sizeMore = () => { if (more) more.style.height = isMobile() ? '' : innerHeight + Math.max(0, track.scrollWidth - innerWidth) + 160 + 'px'; };
+    sizeMore(); ScrollTrigger.addEventListener('refreshInit', sizeMore);
     const setTint = hex => root.style.setProperty('--scene', hex);
     const lbT = document.querySelector('.lb-top'), lbB = document.querySelector('.lb-bot');
     const hT = document.querySelector('.intro-top'), hB = document.querySelector('.intro-bottom');
@@ -519,12 +681,26 @@ function App({ C }) {
         hT.style.opacity = f; hT.style.transform = `translateY(${-p * 140}px)`; hB.style.opacity = f;
         const b = Math.max(0, 1 - p * 2.2); lbT.style.transform = lbB.style.transform = `scaleY(${b})`;
       },
-      onToggle: s => { if (s.isActive) { setActive('intro'); setTint(aura); Stage.setShape(s.progress < 0.42 ? 'capsule' : 'burst', aura); } },
+      onToggle: s => { if (s.isActive) { activate('intro'); setTint(aura); Stage.setShape(s.progress < 0.42 ? 'capsule' : 'burst', aura); } },
     });
-    C.projects.forEach(p => ScrollTrigger.create({ trigger: '#' + p.id, start: 'top 55%', end: 'bottom 45%', onToggle: s => { if (s.isActive) { setActive(p.id); setTint(p.tint || aura); Stage.setShape(p.shape, p.tint || aura); } } }));
-    ScrollTrigger.create({ trigger: '#stack', start: 'top 55%', end: 'bottom 45%', onToggle: s => { if (s.isActive) { setActive('stack'); setTint(C.theme.stackTint); Stage.setShape('wave', C.theme.stackTint); } } });
-    ScrollTrigger.create({ trigger: '#contact', start: 'top 55%', end: 'bottom top', onToggle: s => { if (s.isActive) { setActive('contact'); setTint(aura); Stage.setShape('capsule', aura); } } });
+    C.projects.forEach(p => ScrollTrigger.create({ trigger: '#' + p.id, start: 'top 55%', end: 'bottom 45%', onToggle: s => { if (s.isActive) { activate(p.id); setTint(p.tint || aura); Stage.setShape(p.shape, p.tint || aura); } } }));
+    ScrollTrigger.create({ trigger: '#stack', start: 'top 55%', end: 'bottom 45%', onToggle: s => { if (s.isActive) { activate('stack'); setTint(C.theme.stackTint); Stage.setShape('wave', C.theme.stackTint); } } });
+    ScrollTrigger.create({ trigger: '#contact', start: 'top 55%', end: 'bottom top', onToggle: s => { if (s.isActive) { activate('contact'); setTint(aura); Stage.setShape('capsule', aura); } } });
     ScrollTrigger.create({ trigger: '#contact', start: 'top bottom', end: 'center center', onUpdate: s => Stage.setEnd(s.progress) });
+    ScrollTrigger.create({ trigger: '#about', start: 'top 55%', end: 'bottom 45%', onToggle: s => { if (s.isActive) { activate('about'); setTint(aura); Stage.setShape('halo', aura); } } });
+    ScrollTrigger.create({ trigger: '#more', start: 'top 55%', end: 'bottom 45%', onToggle: s => { if (s.isActive) { activate('more'); setTint(aura); Stage.setShape('galaxy', aura); } } });
+
+    const pw = document.querySelector('.portrait-wrap');
+    if (pw && !reduce) gsap.fromTo(pw, { clipPath: 'inset(22% 14% 22% 14% round 10px)', scale: 0.9 }, { clipPath: 'inset(0% 0% 0% 0% round 10px)', scale: 1, ease: 'none', scrollTrigger: { trigger: '#about', start: 'top 85%', end: 'top 20%', scrub: true } });
+    if (!reduce) document.querySelectorAll('.pcard-wrap').forEach(el => gsap.fromTo(el, { rotateX: 30, y: 90, scale: 0.84, opacity: 0.3, transformPerspective: 1200 }, { rotateX: 0, y: 0, scale: 1, opacity: 1, ease: 'none', scrollTrigger: { trigger: el, start: 'top 98%', end: 'center 55%', scrub: true } }));
+    if (track) gsap.to(track, { x: () => (isMobile() ? 0 : -Math.max(0, track.scrollWidth - innerWidth)), ease: 'none', scrollTrigger: { trigger: more, start: 'top top', end: 'bottom bottom', scrub: true, invalidateOnRefresh: true } });
+
+    const tracks = [...document.querySelectorAll('.mq-track')].map((el, i) => ({ el, x: 0, dir: i % 2 ? 1 : -1 }));
+    const mq = () => { const v = window.__lenis ? window.__lenis.velocity : 0; tracks.forEach(t => { const w = t.el.firstChild ? t.el.firstChild.offsetWidth : 0; if (!w) return; t.x += t.dir * (0.7 + Math.min(Math.abs(v), 80) * 0.3); if (t.x < -w) t.x += w; if (t.x > 0) t.x -= w; t.el.style.transform = `translate3d(${t.x}px,0,0)`; }); };
+    if (!reduce) gsap.ticker.add(mq);
+    let lastHover = null;
+    const ov = e => { const t = e.target.closest && e.target.closest('a,button'); if (t && t !== lastHover) Sound.blip(); lastHover = t; };
+    addEventListener('pointerover', ov);
     document.querySelectorAll('.scene-head').forEach(h => gsap.to(h, { y: -70, ease: 'none', scrollTrigger: { trigger: h.parentElement, start: 'top bottom', end: 'bottom top', scrub: true } }));
 
     const pd = e => { if (!e.target.closest('a,button,.drawer,.usedin')) Stage.pulse(); };
@@ -537,6 +713,7 @@ function App({ C }) {
     if (preview) ScrollTrigger.refresh();
 
     return () => {
+      gsap.ticker.remove(mq); removeEventListener('pointerover', ov); ScrollTrigger.removeEventListener('refreshInit', sizeMore);
       ScrollTrigger.getAll().forEach(t => t.kill());
       if (lenis) { gsap.ticker.remove(raf); lenis.destroy(); }
       window.__lenis = null;
@@ -554,12 +731,16 @@ function App({ C }) {
 
   return html`
     <div className="vignette"></div>
+    <div className="spot"></div>
     <div className="lb lb-top"></div>
     <div className="lb lb-bot"></div>
     <${Nav} C=${C} logoRef=${logoRef} revealed=${revealed} booted=${booted} />
     <main>
       <${Hero} C=${C} revealed=${revealed} />
+      <${About} C=${C} />
+      <${Marquee} C=${C} />
       ${C.projects.map(p => html`<${Scene} key=${p.id} C=${C} p=${p} active=${active === p.id} onOpen=${setDrawer} />`)}
+      <${More} C=${C} onOpen=${setDrawer} />
       <${Stack} C=${C} />
       <${Contact} C=${C} />
     </main>

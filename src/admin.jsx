@@ -34,6 +34,49 @@ function Select({ label, value, options, onChange }) {
   return <Field label={label} id={id}><select id={id} value={value} onChange={e => onChange(e.target.value)}>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>;
 }
 
+async function shrink(file, max = 1600) {
+  const src = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('That file could not be read as an image.')); i.src = src; });
+    const s = Math.min(1, max / Math.max(img.width, img.height));
+    const cv = document.createElement('canvas'); cv.width = Math.round(img.width * s); cv.height = Math.round(img.height * s);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    const fmt = cv.toDataURL('image/webp').startsWith('data:image/webp') ? 'image/webp' : 'image/jpeg';
+    let q = 0.86, data = cv.toDataURL(fmt, q);
+    while (data.length > 1400000 && q > 0.4) { q -= 0.1; data = cv.toDataURL(fmt, q); }
+    return data;
+  } finally { URL.revokeObjectURL(src); }
+}
+
+function ImageField({ label, hint, value, onChange, tall }) {
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState(''); const ref = useRef(); const [id] = useState(fid);
+  const pick = async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    setBusy(true); setErr('');
+    try {
+      const data = await shrink(f);
+      const r = await api('/api/media', { method: 'POST', body: JSON.stringify({ data }) });
+      if (!r.ok) throw new Error(r.data?.error || 'Upload failed. Try again.');
+      onChange(r.data.url);
+    } catch (er) { setErr(er.message || 'Upload failed. Try again.'); }
+    setBusy(false);
+  };
+  return <div className="f">
+    <span className="f-l">{label}</span>
+    <div className={'img-f' + (tall ? ' tall' : '')}>
+      <div className="img-prev">{value ? <img src={value} alt="" /> : <span>No image</span>}</div>
+      <div className="img-a">
+        <button className="ghost" onClick={() => ref.current.click()} disabled={busy}>{busy ? 'Uploading' : value ? 'Replace image' : 'Upload image'}</button>
+        {value && <button className="ghost danger" onClick={() => onChange('')}>Remove</button>}
+        <input ref={ref} type="file" accept="image/*" hidden onChange={pick} />
+        <input id={id} aria-label={label + ' link'} placeholder="Or paste an image link" value={value || ''} onChange={e => onChange(e.target.value)} />
+      </div>
+    </div>
+    {hint && <span className="f-h">{hint}</span>}
+    {err && <span className="err" role="alert">{err}</span>}
+  </div>;
+}
+
 function List({ items, onChange, make, title, render, addLabel }) {
   const [open, setOpen] = useState(null);
   const set = (i, v) => { const n = [...items]; n[i] = v; onChange(n); };
@@ -61,7 +104,7 @@ function List({ items, onChange, make, title, render, addLabel }) {
 
 /* ---------- sections ---------- */
 const SECTIONS = [
-  ['hero', 'Hero'], ['projects', 'Projects'], ['work', 'Project list'], ['stack', 'Skills'],
+  ['hero', 'Hero'], ['about', 'About and photo'], ['marquee', 'Moving words'], ['projects', 'Projects'], ['work', 'All work gallery'], ['stack', 'Skills'],
   ['contact', 'Contact'], ['brand', 'Brand and SEO'], ['labels', 'Buttons and labels'], ['data', 'Backup and history'],
 ];
 
@@ -86,6 +129,10 @@ function Projects({ c, set }) {
             <Select label="3D shape" value={p.shape} options={SHAPES} onChange={f('shape')} />
             <Color label="Scene light" value={p.tint} onChange={f('tint')} />
           </div>
+          <ImageField label="Screenshot" hint="Shown in the floating browser frame. A 16:9 screenshot of the homepage works best." value={p.image} onChange={f('image')} />
+          <h4>More screens</h4>
+          <List items={p.gallery || []} onChange={f('gallery')} addLabel="Add screen" title={(g, i) => 'Screen ' + (i + 1)} make={() => ''}
+            render={(g, sg) => <ImageField label="Image" value={g} onChange={sg} />} />
           <h4>Specs</h4>
           <List items={p.specs || []} onChange={f('specs')} addLabel="Add spec" title={s => [s.value, s.label].filter(Boolean).join(' / ') || 'New spec'}
             make={() => ({ value: '', label: '' })}
@@ -101,7 +148,10 @@ function Projects({ c, set }) {
 
 function Work({ c, set }) {
   return <>
-    <p className="lead">The list beside your skills. Each entry shows a name, a short tag and a one-line explanation. The link id connects it to skills.</p>
+    <p className="lead">These entries appear twice: as cards in the sideways-scrolling gallery, and in the list beside your skills. The link id connects them to skills and to a project's case notes.</p>
+    <Text label="Gallery title" value={c.more.title} onChange={set('more.title')} />
+    <Text label="Gallery intro" value={c.more.sub} onChange={set('more.sub')} />
+    <h4>Entries</h4>
     <List items={c.work} onChange={set('work')} addLabel="Add entry" title={w => w.name || 'Untitled'}
       make={() => ({ id: 'work-' + Date.now().toString(36), name: 'New entry', note: '', summary: '' })}
       render={(w, sw) => {
@@ -109,7 +159,9 @@ function Work({ c, set }) {
         return <>
           <div className="row"><Text label="Name" value={w.name} onChange={f('name')} /><Text label="Tag" value={w.note} onChange={f('note')} placeholder="Fintech" /></div>
           <Text label="Brief explanation" area rows={2} value={w.summary} onChange={f('summary')} />
-          <Text label="Link id" hint="Match a project's link id to keep them together." value={w.id} onChange={v => f('id')(slug(v))} />
+          <Text label="Link id" hint="Use the same link id as a project and the card opens that project's case notes." value={w.id} onChange={v => f('id')(slug(v))} />
+          <Text label="Link" placeholder="https://" hint="Used when the entry is not one of your projects." value={w.url} onChange={f('url')} />
+          <ImageField label="Card image" hint="Leave empty to use the matching project's screenshot." value={w.image} onChange={f('image')} />
         </>;
       }} />
   </>;
@@ -174,6 +226,20 @@ function Editor({ section, c, set, setC, flash }) {
     <Text label="Supporting line" area rows={3} value={c.hero.sub} onChange={set('hero.sub')} />
     <div className="row"><Text label="Main button" value={c.hero.primary} onChange={set('hero.primary')} /><Text label="Second button" value={c.hero.secondary} onChange={set('hero.secondary')} /></div>
   </>;
+  if (section === 'about') return <>
+    <ImageField tall label="Your photo" hint="A portrait works best. It is cropped to 4:5 and compressed before upload." value={c.about.photo} onChange={set('about.photo')} />
+    <div className="row"><Text label="Name" value={c.about.name} onChange={set('about.name')} /><Text label="Role under your name" value={c.about.role} onChange={set('about.role')} /></div>
+    <Text label="Headline" value={c.about.title} onChange={set('about.title')} />
+    <Text label="About you" area rows={6} hint="Each new line becomes a paragraph." value={c.about.body} onChange={set('about.body')} />
+    <h4>Quick facts</h4>
+    <List items={c.about.facts} onChange={set('about.facts')} addLabel="Add fact" title={f => [f.value, f.label].filter(Boolean).join(' / ') || 'New fact'}
+      make={() => ({ value: '', label: '' })}
+      render={(f, sf) => <div className="row"><Text label="Big text" value={f.value} onChange={v => sf({ ...f, value: v })} /><Text label="Small text" value={f.label} onChange={v => sf({ ...f, label: v })} /></div>} />
+  </>;
+  if (section === 'marquee') return <>
+    <p className="lead">Two bands of large words slide across the screen and speed up as people scroll.</p>
+    <Text label="Words" area rows={6} hint="One per line." value={c.marquee.join('\n')} onChange={v => set('marquee')(v.split('\n'))} />
+  </>;
   if (section === 'projects') return <Projects c={c} set={set} />;
   if (section === 'work') return <Work c={c} set={set} />;
   if (section === 'stack') return <Skills c={c} set={set} />;
@@ -187,13 +253,14 @@ function Editor({ section, c, set, setC, flash }) {
   if (section === 'brand') return <>
     <div className="row"><Text label="Wordmark" hint="Shown in the loader and the top bar." value={c.brand.wordmark} onChange={set('brand.wordmark')} /><Text label="Loader line" value={c.brand.tagline} onChange={set('brand.tagline')} /></div>
     <div className="row"><Color label="Main glow colour" value={c.theme.aura} onChange={set('theme.aura')} /><Color label="Skills scene light" value={c.theme.stackTint} onChange={set('theme.stackTint')} /></div>
+    <div className="f"><label className="f-l" htmlFor="glow">Background light strength</label><div className="range"><input id="glow" type="range" min="0" max="2" step="0.1" value={c.theme.glow ?? 1} onChange={e => set('theme.glow')(Number(e.target.value))} /><output>{Number(c.theme.glow ?? 1).toFixed(1)}</output></div><span className="f-h">0 turns the moving light off. 2 is very bright.</span></div>
     <div className="row"><Text label="Footer left" value={c.brand.footerLeft} onChange={set('brand.footerLeft')} /><Text label="Footer right" value={c.brand.footerRight} onChange={set('brand.footerRight')} /></div>
     <h4>Search and sharing</h4>
     <Text label="Page title" value={c.seo.title} onChange={set('seo.title')} />
     <Text label="Description" area rows={2} value={c.seo.description} onChange={set('seo.description')} />
   </>;
   if (section === 'labels') {
-    const L = [['navWork', 'Top bar: work'], ['navStack', 'Top bar: skills'], ['navContact', 'Top bar: contact'], ['introChapter', 'Chapter: intro'], ['stackChapter', 'Chapter: skills'], ['contactChapter', 'Chapter: contact'], ['visit', 'Visit button'], ['notes', 'Case notes button'], ['built', 'Case notes: built heading'], ['stack', 'Case notes: stack heading'], ['close', 'Close button'], ['scroll', 'Scroll hint']];
+    const L = [['navAbout', 'Top bar: about'], ['aboutChapter', 'Chapter: about'], ['moreChapter', 'Chapter: all work'], ['gallery', 'Case notes: screens heading'], ['navWork', 'Top bar: work'], ['navStack', 'Top bar: skills'], ['navContact', 'Top bar: contact'], ['introChapter', 'Chapter: intro'], ['stackChapter', 'Chapter: skills'], ['contactChapter', 'Chapter: contact'], ['visit', 'Visit button'], ['notes', 'Case notes button'], ['built', 'Case notes: built heading'], ['stack', 'Case notes: stack heading'], ['close', 'Close button'], ['scroll', 'Scroll hint']];
     return <div className="grid2">{L.map(([k, l]) => <Text key={k} label={l} value={c.labels[k]} onChange={set('labels.' + k)} />)}</div>;
   }
   if (section === 'data') return <Data c={c} setC={setC} flash={flash} />;

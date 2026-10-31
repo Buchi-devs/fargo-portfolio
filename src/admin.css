@@ -106,3 +106,13 @@ textarea{resize:vertical;line-height:1.5}
   .row,.grid2{grid-template-columns:minmax(0,1fr)}
   .edit{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
 }
+.img-f{display:flex;gap:14px;align-items:flex-start}
+.img-prev{flex:none;width:120px;aspect-ratio:4/3;border-radius:6px;border:1px solid var(--line2);overflow:hidden;background:var(--bg);display:grid;place-items:center;color:var(--mute);font-size:12px}
+.img-prev img{width:100%;height:100%;object-fit:cover;display:block}
+.img-f.tall .img-prev{width:110px;aspect-ratio:4/5}
+.img-a{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:8px;align-content:flex-start}
+.img-a input{flex-basis:100%}
+.range{display:flex;align-items:center;gap:12px}
+.range input{flex:1;accent-color:var(--aura)}
+.range output{font-variant-numeric:tabular-nums;color:var(--mute);width:3ch}
+@media (max-width:520px){.img-f{flex-direction:column}.img-prev{width:100%}}

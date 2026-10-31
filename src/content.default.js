@@ -20,12 +20,23 @@ const content = {
     footerLeft: '© 2026 Fargo Group',
     footerRight: 'Designed and built by Buchi',
   },
-  theme: { aura: '#D9C7A3', stackTint: '#CFCFD6' },
+  theme: { aura: '#D9C7A3', stackTint: '#CFCFD6', glow: 1 },
   labels: {
     navWork: 'Work', navStack: 'Stack', navContact: 'Contact',
     introChapter: 'Intro', stackChapter: 'Stack', contactChapter: 'Contact',
     visit: 'Visit live site', notes: 'Case notes', built: 'What I built', stack: 'Stack', close: 'Close', scroll: 'Scroll',
+    navAbout: 'About', aboutChapter: 'About', moreChapter: 'All work', gallery: 'Screens',
   },
+  about: {
+    photo: '',
+    name: 'Buchi',
+    role: 'Full-stack engineer, Fargo Group',
+    title: 'Hi, I’m Buchi.',
+    body: 'I’m a pharmacy student in Nigeria who designs, builds and runs software for real users: fintech, real-time apps, 3D games and AI agents.\nI handle the whole thing, from the interface to the backend to keeping it live. I care about how a product feels as much as whether it works.',
+    facts: [{ value: 'Nigeria', label: 'where I build from' }, { value: 'Pharmacy', label: 'what I study' }, { value: '5+', label: 'live products I run' }],
+  },
+  marquee: ['Fintech', 'Real-time', '3D games', 'AI agents', 'Laravel', 'React', 'Three.js', 'Design'],
+  more: { title: 'Everything I’ve shipped', sub: 'Live products, client builds and experiments. Tap any one to look closer.' },
   hero: {
     title: 'I build software people pay to use.',
     sub: 'Full-stack engineer and pharmacy student in Nigeria. I design, build and run live products across fintech, real-time media, 3D games and AI.',
@@ -75,8 +86,8 @@ const content = {
     { id: 'justus', name: 'Justus', note: 'Real-time', summary: 'Watch-party app that keeps two video players in sync for couples.' },
     { id: 'bank', name: 'Kalyxen Bank', note: 'Banking UI', summary: 'Private banking demo with a quiet, dark interface on Laravel 11.' },
     { id: 'agents', name: 'AI agents', note: 'Automation', summary: 'A funding-alert agent, a cloned-voice call agent and an autoposting pipeline.' },
-    { id: 'grandeur', name: 'Grandeur Bookings', note: 'Luxury bookings', summary: 'Invitation-only luxury booking platform built in PHP and MySQL.' },
-    { id: 'charity', name: 'Kalyxen Charity', note: 'Nonprofit site', summary: 'Charity foundation website on Laravel, Inertia and React.' },
+    { id: 'grandeur', name: 'Grandeur Bookings', note: 'Luxury bookings', summary: 'Invitation-only luxury booking platform built in PHP and MySQL.', url: 'https://grandeurbookings.site' },
+    { id: 'charity', name: 'Kalyxen Charity', note: 'Nonprofit site', summary: 'Charity foundation website on Laravel, Inertia and React.', url: 'https://charity.kalyxen.org' },
     { id: 'pedal', name: 'PedalAI v2', note: 'Platform rebuild', summary: 'Full rebuild of the PedalAI platform on Laravel, MySQL and React.' },
   ],
   stack: {
@@ -112,13 +123,16 @@ export function normalize(c) {
   const d = clone(content);
   if (!c || typeof c !== 'object') return d;
   const o = { ...d, ...c };
-  for (const k of ['seo', 'brand', 'theme', 'labels', 'hero', 'stack', 'contact']) o[k] = { ...d[k], ...(c[k] || {}) };
-  for (const k of ['projects', 'work']) o[k] = Array.isArray(c[k]) ? c[k] : d[k];
+  for (const k of ['seo', 'brand', 'theme', 'labels', 'hero', 'about', 'more', 'stack', 'contact']) o[k] = { ...d[k], ...(c[k] || {}) };
+  for (const k of ['projects', 'work', 'marquee']) o[k] = Array.isArray(c[k]) ? c[k] : d[k];
+  if (!Array.isArray(o.about.facts)) o.about.facts = d.about.facts;
+  o.projects = o.projects.map(p => ({ image: '', gallery: [], specs: [], built: [], stack: [], ...p }));
+  o.work = o.work.map(w => ({ image: '', url: '', ...w }));
   if (!Array.isArray(o.stack.groups)) o.stack.groups = d.stack.groups;
   return o;
 }
 
-export const RESERVED_IDS = ['intro', 'stack', 'contact', 'root', 'gl'];
+export const RESERVED_IDS = ['intro', 'about', 'more', 'stack', 'contact', 'root', 'gl'];
 
 // Returns an error message, or null when the content is safe to save.
 export function validate(c) {
